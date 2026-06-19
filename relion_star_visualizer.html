@@ -385,7 +385,7 @@ td.cn.clickable:hover{color:var(--teal);text-decoration:underline solid var(--te
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 /* ════════════ STATE ════════════ */
-let allBlocks=[],rows=[],headers=[],filters={};
+let allBlocks=[],rows=[],headers=[],filters={},currentBlockName='filtered';
 let charts={hist:null,scatter:null};
 let multiCharts=[];
 let activeTab='hist';
@@ -555,6 +555,37 @@ function updateHistBarColors(){
 }
 
 /* ════════════ PARSER ════════════ */
+// Tokenize a single STAR data line, respecting single/double-quoted values
+// that may contain whitespace (valid per the STAR/CIF spec, e.g.
+// 'My Project/Micrographs/mic 001.mrc'). A naive split(/\s+/) previously
+// shredded such values across the wrong columns and silently corrupted the
+// row. A quote is only treated as closing when followed by whitespace or
+// end-of-line, matching the STAR convention (so apostrophes inside an
+// unquoted token, e.g. O'Brien, aren't misinterpreted as quote delimiters).
+function tokenizeStarLine(line){
+  const tokens=[];
+  let i=0;const n=line.length;
+  while(i<n){
+    while(i<n&&/\s/.test(line[i]))i++;
+    if(i>=n)break;
+    const qc=line[i];
+    if(qc==="'"||qc==='"'){
+      let j=i+1;
+      while(j<n){
+        if(line[j]===qc&&(j+1>=n||/\s/.test(line[j+1])))break;
+        j++;
+      }
+      if(j<n){tokens.push(line.slice(i+1,j));i=j+1;continue;}
+      // Unterminated quote - fall through and treat as a plain token below.
+    }
+    let j=i;
+    while(j<n&&!/\s/.test(line[j]))j++;
+    tokens.push(line.slice(i,j));
+    i=j;
+  }
+  return tokens;
+}
+
 function parseStar(text){
   const blocks=[];let bName=null,inLoop=false,cols=[],bRows=[];
   for(let raw of text.split('\n')){
@@ -566,7 +597,7 @@ function parseStar(text){
     }else if(line==='loop_'){inLoop=true;cols=[];bRows=[];}
     else if(line.startsWith('_')){if(inLoop)cols.push(line.split(/\s+/)[0].slice(1));}
     else if(inLoop&&cols.length>0){
-      const parts=line.split(/\s+/);
+      const parts=tokenizeStarLine(line);
       if(parts.length>=cols.length){
         const row={};cols.forEach((c,i)=>{const v=parts[i];row[c]=isNaN(v)||v===''?v:parseFloat(v);});bRows.push(row);
       }
@@ -642,6 +673,10 @@ function switchBlock(idx){initBlock(allBlocks[+idx]);}
 
 function initBlock(block){
   headers=block.cols;rows=block.rows;filters={};
+  // Previously exportFiltered() always wrote "data_filtered" regardless of
+  // the source block's actual name, discarding that information on
+  // round-trip. Remember it here so export can preserve it.
+  currentBlockName=block.name||'filtered';
   headers.forEach(col=>{
     const vals=rows.map(r=>r[col]).filter(v=>typeof v==='number');
     if(vals.length){const mn=Math.min(...vals),mx=Math.max(...vals);filters[col]={min:mn,max:mx,dMin:mn,dMax:mx,active:false};}
@@ -688,16 +723,16 @@ function s2v(sv,mn,mx){return mn+sv/1000*(mx-mn);}
 function applyFilter(col,mn,mx){
   const f=filters[col];if(!f)return;
   f.min=mn;f.max=mx;f.active=mn>f.dMin+1e-10||mx<f.dMax-1e-10;
-  const dot=document.getElementById('dot-'+col);if(dot)dot.className='dot'+(f.active?' on':'');
-  const fmi=document.getElementById('fmin-'+col),fma=document.getElementById('fmax-'+col);
+  const dot=document.getElementById('dot-'+idSafe(col));if(dot)dot.className='dot'+(f.active?' on':'');
+  const fmi=document.getElementById('fmin-'+idSafe(col)),fma=document.getElementById('fmax-'+idSafe(col));
   if(fmi)fmi.value=fmtI(mn);if(fma)fma.value=fmtI(mx);
-  const slo=document.getElementById('sbslo-'+col),shi=document.getElementById('sbshi-'+col);
+  const slo=document.getElementById('sbslo-'+idSafe(col)),shi=document.getElementById('sbshi-'+idSafe(col));
   if(slo){slo.value=v2s(mn,f.dMin,f.dMax);shi.value=v2s(mx,f.dMin,f.dMax);updateSbFill(col);}
   updateStatus();debouncedRefresh();
 }
 
 function updateSbFill(col){
-  const f=filters[col],fill=document.getElementById('sbfill-'+col);if(!fill)return;
+  const f=filters[col],fill=document.getElementById('sbfill-'+idSafe(col));if(!fill)return;
   const lo=v2s(f.min,f.dMin,f.dMax)/10,hi=v2s(f.max,f.dMin,f.dMax)/10;
   fill.style.left=Math.min(lo,hi)+'%';fill.style.width=Math.abs(hi-lo)+'%';
 }
@@ -710,11 +745,11 @@ function updateFilter(col,bound,val){
 function resetFilters(){
   Object.entries(filters).forEach(([col,f])=>{
     f.min=f.dMin;f.max=f.dMax;f.active=false;
-    const fmi=document.getElementById('fmin-'+col),fma=document.getElementById('fmax-'+col);
+    const fmi=document.getElementById('fmin-'+idSafe(col)),fma=document.getElementById('fmax-'+idSafe(col));
     if(fmi)fmi.value=fmtI(f.dMin);if(fma)fma.value=fmtI(f.dMax);
-    const slo=document.getElementById('sbslo-'+col),shi=document.getElementById('sbshi-'+col);
+    const slo=document.getElementById('sbslo-'+idSafe(col)),shi=document.getElementById('sbshi-'+idSafe(col));
     if(slo){slo.value=0;shi.value=1000;updateSbFill(col);}
-    const dot=document.getElementById('dot-'+col);if(dot)dot.className='dot';
+    const dot=document.getElementById('dot-'+idSafe(col));if(dot)dot.className='dot';
   });
   ['h-slo','h-shi','sx-lo','sx-hi','sy-lo','sy-hi'].forEach((id,i)=>{
     const el=document.getElementById(id);if(el)el.value=i%2===0?0:1000;
@@ -736,24 +771,34 @@ function buildColumnList(){
     const isNum=vals.length>0,f=filters[col];
     const div=document.createElement('div');div.className='col-item';
     const dn=col.replace(/^rln/,'');
+    // col is used as a DOM id fragment (id="dot-${col}" etc.) and looked up
+    // the same way elsewhere (e.g. getElementById('fbody-'+col)). A raw
+    // column name containing a quote character would break out of the
+    // id="..." attribute itself, after which the browser's HTML parser
+    // treats everything past that point as markup rather than attribute
+    // text - this is what let a malicious column name inject real DOM
+    // elements even though the *visible* text below was already escaped.
+    // idSafe() (percent-encoding) is applied to every id built here, and
+    // the corresponding lookups elsewhere use idSafe() too so they keep
+    // matching.
     div.innerHTML=`<div class="col-hd" onclick="toggleFilter(this)">
-      <div class="dot${f&&f.active?' on':''}" id="dot-${col}"></div>
-      <div class="col-name" title="${col}">${dn}</div>
+      <div class="dot${f&&f.active?' on':''}" id="dot-${idSafe(col)}"></div>
+      <div class="col-name" title="${escapeHtml(col)}">${escapeHtml(dn)}</div>
       <span class="type-tag">${isNum?'num':'str'}</span></div>`;
     if(isNum){
-      div.innerHTML+=`<div class="filter-body" id="fbody-${col}">
+      div.innerHTML+=`<div class="filter-body" id="fbody-${idSafe(col)}">
         <div class="data-range">range: ${fmtN(f.dMin)} – ${fmtN(f.dMax)}</div>
         <div class="drs-wrap">
-          <div class="drs-track"><div class="drs-fill" id="sbfill-${col}" style="left:0%;width:100%"></div></div>
-          <input type="range" id="sbslo-${col}" min="0" max="1000" value="0" oninput="sbSlide('${col}')">
-          <input type="range" id="sbshi-${col}" min="0" max="1000" value="1000" oninput="sbSlide('${col}')">
+          <div class="drs-track"><div class="drs-fill" id="sbfill-${idSafe(col)}" style="left:0%;width:100%"></div></div>
+          <input type="range" id="sbslo-${idSafe(col)}" min="0" max="1000" value="0" oninput="sbSlide('${escapeJsStr(col)}')">
+          <input type="range" id="sbshi-${idSafe(col)}" min="0" max="1000" value="1000" oninput="sbSlide('${escapeJsStr(col)}')">
         </div>
         <div class="fi-row"><span class="fi-lbl">min</span>
-          <input class="fi" id="fmin-${col}" type="number" value="${fmtI(f.dMin)}"
-            onchange="updateFilter('${col}','min',this.value)" step="any"></div>
+          <input class="fi" id="fmin-${idSafe(col)}" type="number" value="${fmtI(f.dMin)}"
+            onchange="updateFilter('${escapeJsStr(col)}','min',this.value)" step="any"></div>
         <div class="fi-row"><span class="fi-lbl">max</span>
-          <input class="fi" id="fmax-${col}" type="number" value="${fmtI(f.dMax)}"
-            onchange="updateFilter('${col}','max',this.value)" step="any"></div>
+          <input class="fi" id="fmax-${idSafe(col)}" type="number" value="${fmtI(f.dMax)}"
+            onchange="updateFilter('${escapeJsStr(col)}','max',this.value)" step="any"></div>
       </div>`;
     }
     list.appendChild(div);
@@ -761,27 +806,36 @@ function buildColumnList(){
 }
 
 function sbSlide(col){
-  const slo=document.getElementById('sbslo-'+col),shi=document.getElementById('sbshi-'+col);
+  const slo=document.getElementById('sbslo-'+idSafe(col)),shi=document.getElementById('sbshi-'+idSafe(col));
   const f=filters[col];
   let lo=parseInt(slo.value),hi=parseInt(shi.value);
   if(lo>hi){const t=lo;lo=hi;hi=t;} slo.value=lo;shi.value=hi;
   updateSbFill(col);
   const mn=s2v(lo,f.dMin,f.dMax),mx=s2v(hi,f.dMin,f.dMax);
-  const fmi=document.getElementById('fmin-'+col),fma=document.getElementById('fmax-'+col);
+  const fmi=document.getElementById('fmin-'+idSafe(col)),fma=document.getElementById('fmax-'+idSafe(col));
   if(fmi)fmi.value=fmtI(mn);if(fma)fma.value=fmtI(mx);
   f.min=mn;f.max=mx;f.active=mn>f.dMin+1e-10||mx<f.dMax-1e-10;
-  const dot=document.getElementById('dot-'+col);if(dot)dot.className='dot'+(f.active?' on':'');
+  const dot=document.getElementById('dot-'+idSafe(col));if(dot)dot.className='dot'+(f.active?' on':'');
   updateStatus();debouncedRefresh();
 }
 
 function toggleFilter(hd){
   const col=hd.querySelector('.col-name').title;
-  const body=document.getElementById('fbody-'+col);if(body)body.classList.toggle('open');
+  const body=document.getElementById('fbody-'+idSafe(col));if(body)body.classList.toggle('open');
 }
 
 /* ════════════ POPULATE SELECTS ════════════ */
 function populateSelects(){
-  const nc=headers.filter(h=>typeof rows[0][h]==='number');
+  // NOTE: previously this checked only typeof rows[0][h]==='number', so a
+  // column with a non-numeric placeholder (e.g. '?') in just the FIRST row
+  // would silently vanish from every chart dropdown (Histogram/Scatter/
+  // Multi-histogram) even though it's numeric in every other row and is
+  // correctly treated as numeric by the sidebar filters and Statistics tab.
+  // filters[] already reflects an all-rows numeric check (see initBlock),
+  // so deriving the numeric-column list from it keeps this consistent with
+  // the rest of the UI, while filtering through `headers` to preserve the
+  // original column order.
+  const nc=headers.filter(h=>!!filters[h]);
   ['hc','sx','sy','mhcols'].forEach(id=>{
     const el=document.getElementById(id);el.innerHTML='';
     nc.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c.replace(/^rln/,'');el.appendChild(o);});
@@ -1116,7 +1170,7 @@ function renderStatsTable(){
       const med=sorted.length%2===0?(sorted[sorted.length/2-1]+sorted[sorted.length/2])/2:sorted[Math.floor(sorted.length/2)];
       const q3=sorted[Math.floor(sorted.length*.75)];
       const f=filters[col],isFilt=f&&f.active;
-      tr.innerHTML=`<td class="cn clickable" title="View histogram" onclick="jumpToHist('${col}')">${col.replace(/^rln/,'')}</td>
+      tr.innerHTML=`<td class="cn clickable" title="View histogram" onclick="jumpToHist('${escapeJsStr(col)}')">${escapeHtml(col.replace(/^rln/,''))}</td>
         <td style="color:var(--muted)">numeric</td><td>${vals.length}</td>
         <td>${fmtN(mean)}</td><td>${fmtN(std)}</td>
         <td>${fmtN(sorted[0])}</td><td>${fmtN(q1)}</td>
@@ -1128,7 +1182,7 @@ function renderStatsTable(){
           ${isFilt?'active':'—'}</span></td>`;
     }else{
       const unique=[...new Set(fr.map(r=>r[col]))].length;
-      tr.innerHTML=`<td class="cn">${col.replace(/^rln/,'')}</td>
+      tr.innerHTML=`<td class="cn">${escapeHtml(col.replace(/^rln/,''))}</td>
         <td style="color:var(--muted)">string</td><td>${fr.length}</td>
         <td colspan="7" style="color:var(--muted);font-size:10px">${unique} unique values</td><td>—</td>`;
     }
@@ -1143,7 +1197,7 @@ function jumpToHist(col){
   hThLo=null;hThHi=null;lastHistCol=null;
   switchTab(document.querySelector('.tab[data-tab="hist"]'));
   document.getElementById('hc').value=col;
-  const fbody=document.getElementById('fbody-'+col);
+  const fbody=document.getElementById('fbody-'+idSafe(col));
   if(fbody){
     fbody.classList.add('open');
     const hd=fbody.previousElementSibling;
@@ -1171,15 +1225,39 @@ function refreshCharts(){
 }
 
 /* ════════════ EXPORT ════════════ */
+function numToStarStr(v){
+  // Plain String(v)/v.toString() switches to exponential notation for very
+  // small magnitudes (e.g. 1.5e-10) or very large ones, which not every STAR
+  // reader is guaranteed to accept in a numeric field. Use a fixed-point
+  // representation in that range instead; trim trailing zeros for readability.
+  if(v===0)return '0';
+  const a=Math.abs(v);
+  if(a<1e-4||a>=1e15){
+    // 15 sig-figs of fixed-point precision is generous for typical
+    // cryo-EM measurement magnitudes; trim trailing zeros (but keep at
+    // least one digit after the decimal point).
+    let s=v.toFixed(20).replace(/0+$/,'');
+    if(s.endsWith('.'))s+='0';
+    return s;
+  }
+  return String(v);
+}
+
 function exportFiltered(){
   if(!rows.length)return;
   const fr=filtered();
-  let out='\ndata_filtered\n\nloop_\n';
+  // Preserve the original block name (e.g. "particles", "micrographs")
+  // instead of always hardcoding "data_filtered", so the exported file
+  // doesn't lose that information on round-trip.
+  let out=`\ndata_${currentBlockName}\n\nloop_\n`;
   headers.forEach((h,i)=>{out+=`_${h} #${i+1}\n`;});
-  fr.forEach(row=>{out+=headers.map(h=>{const v=row[h];return typeof v==='number'?v:`${v}`;}).join('\t')+'\n';});
+  fr.forEach(row=>{out+=headers.map(h=>{
+    const v=row[h];
+    return typeof v==='number'?numToStarStr(v):`${v}`;
+  }).join('\t')+'\n';});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([out],{type:'text/plain'}));
-  a.download='filtered.star';a.click();
+  a.download=`${currentBlockName}_filtered.star`;a.click();
 }
 
 /* ════════════ FILE INPUT ════════════ */
@@ -1431,7 +1509,7 @@ async function showTT(e,micName,pt){
   const file=micFiles.get(relLo)||micFiles.get(base)||micFiles.get(stem)||
     [...micFiles.entries()].find(([k])=>k.endsWith(base))?.[1]||null;
   if(!file){
-    imgEl.innerHTML=`<div class="mic-status" style="color:#c45070">Not found in loaded folder<br><span style="font-size:9px;opacity:.7">${micName}</span></div>`;
+    imgEl.innerHTML=`<div class="mic-status" style="color:#c45070">Not found in loaded folder<br><span style="font-size:9px;opacity:.7">${escapeHtml(micName)}</span></div>`;
     tt.style.display='block';posTT(e,tt);return;
   }
   imgEl.innerHTML=`<div class="mic-status">Loading…</div>`;
@@ -1448,7 +1526,7 @@ async function showTT(e,micName,pt){
       thumb.src=url;thumb.style.cssText='max-width:210px;max-height:210px;border-radius:4px;border:1px solid var(--border);display:block';
     }
     if(thumb){micCache.set(relLo,thumb);imgEl.innerHTML='';imgEl.appendChild(thumb.cloneNode?thumb.cloneNode(true):thumb);}
-  }catch(err){imgEl.innerHTML=`<div class="mic-status" style="color:#c45070">${err.message}</div>`;}
+  }catch(err){imgEl.innerHTML=`<div class="mic-status" style="color:#c45070">${escapeHtml(err.message)}</div>`;}
   posTT(e,tt);
 }
 
@@ -1469,26 +1547,58 @@ async function renderMrc(file,thumbSize=210){
     const nsymbt=Math.max(0,dv.getInt32(92,true));
     const dataStart=1024+nsymbt;
     const bpp=mode===0?1:mode===1||mode===6?2:mode===2?4:0;
-    if(!bpp)return null;
-    const nPx=Math.min(nx*ny,1<<23);
-    const dataBuf=await file.slice(dataStart,dataStart+nPx*bpp).arrayBuffer();
-    const dv2=new DataView(dataBuf);
-    const pixels=new Float32Array(nPx);
-    let mn=Infinity,mx=-Infinity;
-    for(let i=0;i<nPx;i++){
-      const off=i*bpp;
-      let v=mode===0?dv2.getUint8(off):mode===1?dv2.getInt16(off,true):mode===6?dv2.getUint16(off,true):dv2.getFloat32(off,true);
-      if(!isFinite(v))v=0;pixels[i]=v;if(v<mn)mn=v;if(v>mx)mx=v;
-    }
-    const rng=mx-mn||1;
-    const W=Math.min(nx,nPx),H=Math.min(ny,Math.floor(nPx/nx));
+    if(!bpp||nx<=0||ny<=0)return null;
+
+    // NOTE: previously this capped the *total* pixel count read (nPx) and
+    // then reconstructed W/H from that capped count via
+    // W=min(nx,nPx), H=min(ny,floor(nPx/nx)) - which truncates rows off the
+    // bottom of the image rather than subsampling, badly distorting the
+    // aspect ratio for large images (e.g. an 8192x8192 K3 micrograph became
+    // an 8192x1024 thumbnail, 8:1 instead of 1:1).
+    //
+    // Fix: since we only need a small thumbnail, decide the output
+    // thumbnail size from the real nx/ny up front, then read pixels using a
+    // stride across the FULL image so every output pixel samples
+    // proportionally from across the whole micrograph - aspect ratio is
+    // preserved and we avoid decoding megabytes of data we'd just downscale
+    // away.
+    const maxOutDim=Math.max(thumbSize,1);
+    const scaleOut=Math.min(maxOutDim/nx,maxOutDim/ny,1);
+    const W=Math.max(1,Math.round(nx*scaleOut));
+    const H=Math.max(1,Math.round(ny*scaleOut));
+
     const tmp=document.createElement('canvas');tmp.width=W;tmp.height=H;
     const tctx=tmp.getContext('2d');
     const id=tctx.createImageData(W,H);
-    for(let i=0;i<W*H;i++){const v=Math.round(255*(pixels[i]-mn)/rng);id.data[i*4]=v;id.data[i*4+1]=v;id.data[i*4+2]=v;id.data[i*4+3]=255;}
+
+    // Hard safety cap on bytes actually read from disk for one row's worth
+    // of source pixels at a time, to bound memory for pathological headers.
+    const rowBytes=nx*bpp;
+    let mn=Infinity,mx=-Infinity;
+    const sampled=new Float32Array(W*H);
+
+    for(let oy=0;oy<H;oy++){
+      const sy=Math.min(ny-1,Math.floor(oy/scaleOut));
+      const rowStart=dataStart+sy*rowBytes;
+      const rowBuf=await file.slice(rowStart,rowStart+rowBytes).arrayBuffer();
+      const rdv=new DataView(rowBuf);
+      for(let ox=0;ox<W;ox++){
+        const sx=Math.min(nx-1,Math.floor(ox/scaleOut));
+        const off=sx*bpp;
+        if(off+bpp>rdv.byteLength)continue; // truncated/short row, skip
+        let v=mode===0?rdv.getUint8(off):mode===1?rdv.getInt16(off,true):mode===6?rdv.getUint16(off,true):rdv.getFloat32(off,true);
+        if(!isFinite(v))v=0;
+        const idx=oy*W+ox;
+        sampled[idx]=v;
+        if(v<mn)mn=v;if(v>mx)mx=v;
+      }
+    }
+    if(!isFinite(mn)||!isFinite(mx)){mn=0;mx=1;}
+    const rng=mx-mn||1;
+    for(let i=0;i<W*H;i++){const v=Math.round(255*(sampled[i]-mn)/rng);id.data[i*4]=v;id.data[i*4+1]=v;id.data[i*4+2]=v;id.data[i*4+3]=255;}
     tctx.putImageData(id,0,0);
-    const scale=Math.min(thumbSize/W,thumbSize/H,1);
-    const cv=document.createElement('canvas');cv.width=Math.round(W*scale);cv.height=Math.round(H*scale);
+
+    const cv=document.createElement('canvas');cv.width=W;cv.height=H;
     cv.style.cssText='border-radius:4px;border:1px solid var(--border);display:block';
     cv.getContext('2d').drawImage(tmp,0,0,cv.width,cv.height);
     return cv;
@@ -1496,6 +1606,42 @@ async function renderMrc(file,thumbSize=210){
 }
 
 /* ════════════ UTILS ════════════ */
+/* ════════════ ESCAPING HELPERS ════════════ */
+// Column names and micrograph paths come from user-supplied .star files and
+// are interpolated into innerHTML (as text/attribute content) and in a few
+// places into inline onclick/onchange JS string-literal arguments. Without
+// escaping, a column name or path containing  < > " ' & characters could
+// inject markup or break out of an attribute/JS-string context. These
+// helpers are applied at every such interpolation site below.
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// For use inside a single-quoted inline JS string literal that itself sits
+// inside a DOUBLE-quoted HTML attribute, e.g. oninput="fn('${escapeJsStr(col)}')".
+// Must escape for BOTH layers: backslash/single-quote/newlines so the value
+// can't terminate the JS string early, AND double-quotes (as &quot;) so it
+// can't terminate the surrounding HTML attribute either - a raw `"` in the
+// column name was exactly what let a malicious column name break out of the
+// oninput="..." attribute and corrupt the rest of the parsed markup, even
+// though the JS-string layer alone was being escaped correctly.
+function escapeJsStr(s){
+  return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'').replace(/"/g,'&quot;');
+}
+// Column names are also used as DOM id fragments throughout the sidebar
+// (id="dot-${col}", "fbody-${col}", "sbslo-${col}", etc.) and looked back up
+// the same way (getElementById('dot-'+col)). A raw column name containing a
+// quote character breaks out of the id="..." attribute early, after which
+// the HTML parser treats the rest of the string as markup rather than
+// attribute text - this was the actual root cause of the earlier injection
+// test failure (escaping the *visible text* wasn't enough, since the
+// breakout already happened at the unescaped id attribute upstream of it).
+// encodeURIComponent produces a value containing only characters that are
+// always safe, unquoted-or-quoted HTML attribute content, and is applied
+// consistently at every id-building AND id-lookup site so they keep matching.
+function idSafe(col){
+  return encodeURIComponent(String(col));
+}
+
 function fmtN(v){
   if(typeof v!=='number'||isNaN(v))return'—';
   if(Math.abs(v)>=1e6)return(v/1e6).toFixed(2)+'M';
@@ -1546,7 +1692,11 @@ async function generatePdfReport(){
   const doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
   const PW=210,PH=297,ML=14,MR=14,MT=14,usableW=PW-ML-MR;
   const fr=filtered();
-  const numCols=headers.filter(h=>typeof rows[0][h]==='number');
+  // Same fix as populateSelects(): use the all-rows-aware filters[] keys
+  // rather than checking only rows[0], so a column with a placeholder value
+  // in the first row isn't silently dropped from the PDF's histogram pages
+  // and statistics table either.
+  const numCols=headers.filter(h=>!!filters[h]);
   const activeFilters=Object.entries(filters).filter(([,f])=>f.active);
   const now=new Date().toLocaleString();
 
