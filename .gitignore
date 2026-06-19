@@ -1,0 +1,24 @@
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (falls später Tooling wie ein Linter/Bundler dazukommt)
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Lokale Testdaten / exportierte Dateien, die beim Ausprobieren entstehen
+*.star
+!sample*.star
+relion_report_*.pdf
+
+# Lokale Notizen
+*.local.md
+TODO.md
